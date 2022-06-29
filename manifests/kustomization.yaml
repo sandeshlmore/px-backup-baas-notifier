@@ -1,0 +1,5 @@
+resources:
+- controller.yaml
+- rbac.yaml
+- serviceaccount.yaml
+

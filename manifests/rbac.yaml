@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: px-backup-notifier-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: px-backup-notifier-role
+subjects:
+- kind: ServiceAccount
+  name: px-backup-notifier
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: px-backup-notifier-role
+rules:
+- apiGroups:
+  - backup.purestorage.com
+  resources:
+  - mongos
+  - backups
+  - backups/status
+  - mongos/status
+  verbs:
+  - get
+  - list
+  - watch

@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: px-backup-notifier
+  labels:
+    controller: px-backup-notifier
+spec:
+  selector:
+    matchLabels:
+      controller: px-backup-notifier
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        controller: px-backup-notifier
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - command:
+        - /controller
+        env:
+          - name: "WEBHOOK_URL"
+            value: ""
+        image: px-backup-notifier:latest
+        name: px-backup-notifier
+        securityContext:
+          allowPrivilegeEscalation: false
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+      serviceAccountName: px-backup-notifier
+      terminationGracePeriodSeconds: 10
