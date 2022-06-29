@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: px-backup-notifier
+  namespace: operator-system
   labels:
     controller: px-backup-notifier
 spec:

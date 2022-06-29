@@ -9,7 +9,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: px-backup-notifier
-  namespace: default
+  namespace: operator-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
