@@ -8,43 +8,43 @@ import (
 )
 
 // StatesAndNotificationsMapping represents all possible states and corresponding notification
-// Format >>  {"BackupStatus" : {"MongoStatus": "NotificationToBeSent"}UnReachable
-// Note: Only state transition that is possible after backup is "Available" is "UnReachable"
+// Format >>  {"BackupStatus" : {"MongoStatus": "NotificationToBeSent"}NotReachable
+// Note: Only state transition that is possible after backup is "Available" is "NotReachable"
 var StatesAndNotificationsMapping = map[string]map[string]string{
 	"Available": {
-		"Available":   "Success",
-		"UnReachable": "UnReachable",
-		"Pending":     "Provisioning",
-		"Failed":      "Failed",
-		"NotFound":    "UnReachable",
+		"Available":    "Success",
+		"NotReachable": "NotReachable",
+		"Pending":      "Provisioning",
+		"Failed":       "Failed",
+		"NotFound":     "NotReachable",
 	},
-	"UnReachable": { // does not matter status of mongo, if backup is in Unreachable notification will be UnReachable
-		"Available":   "UnReachable",
-		"UnReachable": "UnReachable",
-		"Pending":     "UnReachable",
-		"Failed":      "UnReachable",
-		"NotFound":    "Unreachable",
+	"NotReachable": { // does not matter status of mongo, if backup is in Unreachable notification will be NotReachable
+		"Available":    "NotReachable",
+		"NotReachable": "NotReachable",
+		"Pending":      "NotReachable",
+		"Failed":       "NotReachable",
+		"NotFound":     "Unreachable",
 	},
 	"Pending": { // does not matter status of mongo, if backup is in Unreachable notification will be Provisioning
-		"Available":   "Provisioning",
-		"UnReachable": "Provisioning",
-		"Pending":     "Provisioning",
-		"Failed":      "Provisioning",
-		"NotFound":    "Provisioning",
+		"Available":    "Provisioning",
+		"NotReachable": "Provisioning",
+		"Pending":      "Provisioning",
+		"Failed":       "Provisioning",
+		"NotFound":     "Provisioning",
 	},
 	"Failed": { // does not matter status of mongo, if backup is in Unreachable notification will be Failed
-		"Available":   "Failed",
-		"UnReachable": "Failed",
-		"Pending":     "Failed",
-		"Failed":      "Failed",
-		"NotFound":    "Failed",
+		"Available":    "Failed",
+		"NotReachable": "Failed",
+		"Pending":      "Failed",
+		"Failed":       "Failed",
+		"NotFound":     "Failed",
 	},
 	"NotFound": { // does not matter status of mongo, if backup is in Unreachable notification will be Failed
-		"Available":   "Deleted",
-		"UnReachable": "Deleted",
-		"Pending":     "Deleted",
-		"Failed":      "Deleted",
-		"NotFound":    "Deleted",
+		"Available":    "Deleted",
+		"NotReachable": "Deleted",
+		"Pending":      "Deleted",
+		"Failed":       "Deleted",
+		"NotFound":     "Deleted",
 	},
 }
 
