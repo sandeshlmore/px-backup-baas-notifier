@@ -171,7 +171,7 @@ func (c *controller) handleBackupAndMongoStatus(obj interface{}) {
 		// It might happen that Mongo Cr is created and backup is not created yet or vice versa,
 		// In this case we dont want to send unreachable or deleted straightway
 		// following e.g. scenarios
-		// Mongo --> Pending/Available/UnReachable   AND   Backup --> NotFound
+		// Mongo --> Pending/Available/NotReachable   AND   Backup --> NotFound
 		// then we send Provisioning till creationTime < 2 min
 		// same goes for below case
 		// Backup --> Pending/Available/ and Mongo --> NotFound
