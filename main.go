@@ -22,6 +22,7 @@ import (
 
 var Logger logr.Logger
 var nsLabel string
+var JobName = os.Getenv("JobName")
 
 func init() {
 	opts := zap.Options{
@@ -39,6 +40,9 @@ func init() {
 			Logger.Error(errors.New("Invalid env 'nsLabel'"), "Namespace Identifier label 'nsLabel' must be in `key:val` format ")
 			os.Exit(1)
 		}
+	}
+	if JobName == "" {
+		JobName = "backup-scheduler"
 	}
 }
 
