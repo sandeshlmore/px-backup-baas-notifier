@@ -23,7 +23,7 @@ var StatesAndNotificationsMapping = map[string]map[string]string{
 		"NotReachable": "NotReachable",
 		"Pending":      "NotReachable",
 		"Failed":       "NotReachable",
-		"NotFound":     "Unreachable",
+		"NotFound":     "NotReachable",
 	},
 	"Pending": { // does not matter status of mongo, if backup is in Unreachable notification will be Provisioning
 		"Available":    "Provisioning",
@@ -40,10 +40,10 @@ var StatesAndNotificationsMapping = map[string]map[string]string{
 		"NotFound":     "Failed",
 	},
 	"NotFound": { // does not matter status of mongo, if backup is in Unreachable notification will be Failed
-		"Available":    "Deleted",
-		"NotReachable": "Deleted",
-		"Pending":      "Deleted",
-		"Failed":       "Deleted",
+		"Available":    "Failed",
+		"NotReachable": "Failed",
+		"Pending":      "Provisioning",
+		"Failed":       "Failed",
 		"NotFound":     "Deleted",
 	},
 }

@@ -1,21 +1,31 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/portworx/px-backup-baas-notifier/pkg/notification"
-
+	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 )
 
 type controller struct {
-	client              dynamic.Interface
+	client              kubernetes.Interface
+	dynclient           dynamic.Interface
+	nsinformer          cache.SharedIndexInformer
 	backupinformer      cache.SharedIndexInformer
 	mongoinformer       cache.SharedIndexInformer
 	dynInformer         dynamicinformer.DynamicSharedInformerFactory
@@ -25,6 +35,7 @@ type controller struct {
 	fullCacheSyncedOnce bool
 	stateHistory        *StateHistory
 	notifyClient        notification.Client
+	queue               workqueue.RateLimitingInterface
 }
 
 var backupGVR = schema.GroupVersionResource{
@@ -52,14 +63,39 @@ type StateHistory struct {
 }
 
 const NOTFOUND string = "NotFound"
+const AVAILABLE string = "Available"
 
 // Create Informers and add eventhandlers
-func newController(client dynamic.Interface, dynInformer dynamicinformer.DynamicSharedInformerFactory,
+func newController(client kubernetes.Interface, dynclient dynamic.Interface, dynInformer dynamicinformer.DynamicSharedInformerFactory,
 	stopch <-chan struct{}, notifyClient notification.Client) *controller {
+	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	Backupinf := dynInformer.ForResource(backupGVR).Informer()
 	Mongoinf := dynInformer.ForResource(mongoGVR).Informer()
+
+	ctx := context.Background()
+	labelstring := strings.Split(nsLabel, ":")
+	labelSelector := labels.Set(map[string]string{labelstring[0]: labelstring[1]}).AsSelector()
+
+	nsinformer := cache.NewSharedIndexInformer(
+		&cache.ListWatch{
+			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+				options.LabelSelector = labelSelector.String()
+				return client.CoreV1().Namespaces().List(ctx, options)
+			},
+			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+				options.LabelSelector = labelSelector.String()
+				return client.CoreV1().Namespaces().Watch(ctx, options)
+			},
+		},
+		&corev1.Namespace{},
+		0, //Skip resync
+		cache.Indexers{},
+	)
+
 	c := &controller{
+		dynclient:      dynclient,
 		client:         client,
+		nsinformer:     nsinformer,
 		backupinformer: Backupinf,
 		mongoinformer:  Mongoinf,
 		dynInformer:    dynInformer,
@@ -70,7 +106,16 @@ func newController(client dynamic.Interface, dynInformer dynamicinformer.Dynamic
 			perNamespaceHistory: map[string]*NamespaceStateHistory{},
 		},
 		notifyClient: notifyClient,
+		queue:        queue,
 	}
+
+	nsinformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		DeleteFunc: func(obj interface{}) {
+			Logger.Info("Delete namespace event", "NameSpace", obj.(*corev1.Namespace).Name)
+			c.queue.Add(obj)
+		},
+	})
+
 	Backupinf.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
@@ -84,7 +129,7 @@ func newController(client dynamic.Interface, dynInformer dynamicinformer.Dynamic
 			},
 			DeleteFunc: func(obj interface{}) {
 				Logger.Info("Backup is deleted")
-				c.handleBackupAndMongoStatus(obj)
+				c.handleCRDeletion(obj)
 			},
 		},
 	)
@@ -102,7 +147,7 @@ func newController(client dynamic.Interface, dynInformer dynamicinformer.Dynamic
 			},
 			DeleteFunc: func(obj interface{}) {
 				Logger.Info("Mongo is deleted")
-				c.handleBackupAndMongoStatus(obj)
+				c.handleCRDeletion(obj)
 			},
 		},
 	)
@@ -111,7 +156,8 @@ func newController(client dynamic.Interface, dynInformer dynamicinformer.Dynamic
 
 func (c *controller) SyncInformerCache() {
 	if !c.fullCacheSyncedOnce {
-		if !cache.WaitForNamedCacheSync("px-backup-notifier", c.stopChannel, c.backupinformer.HasSynced, c.mongoinformer.HasSynced) {
+		if !cache.WaitForNamedCacheSync("px-backup-notifier", c.stopChannel, c.backupinformer.HasSynced,
+			c.nsinformer.HasSynced, c.mongoinformer.HasSynced) {
 			Logger.Info("Timedout waiting for cache to be synced")
 			c.fullCacheSyncedOnce = false
 			return
@@ -123,8 +169,12 @@ func (c *controller) SyncInformerCache() {
 // start the controller
 func (c *controller) run(stopch <-chan struct{}) {
 	Logger.Info("Started notification controller")
+	defer c.queue.ShutDown()
 
 	c.dynInformer.Start(stopch)
+	go c.nsinformer.Run(stopch)
+
+	go wait.Until(c.worker, 1*time.Second, stopch)
 
 	<-stopch
 
@@ -209,7 +259,7 @@ func (c *controller) handleBackupAndMongoStatus(obj interface{}) {
 
 	c.stateHistory.Unlock()
 
-	Logger.Info("Curent Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "Notification", state)
+	Logger.Info("Curent Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "Notification", state, "Event", "CR Update")
 
 	note := notification.Note{
 		State:          state, //TODO: handle unknown state transition error
@@ -221,4 +271,89 @@ func (c *controller) handleBackupAndMongoStatus(obj interface{}) {
 	if err != nil {
 		Logger.Error(err, "Failed to send notification")
 	}
+}
+
+func (c *controller) worker() {
+	for c.handleNamespaceDeletion() {
+
+	}
+}
+
+func (c *controller) handleNamespaceDeletion() bool {
+	item, quit := c.queue.Get()
+	if quit {
+		return false
+	}
+	defer c.queue.Done(item)
+	key, err := cache.MetaNamespaceKeyFunc(item)
+	if err != nil {
+		Logger.Error(err, "getting key from cahce")
+		return false
+	}
+
+	_, namespace, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		Logger.Error(err, "splitting key into namespace and name")
+		return false
+	}
+
+	if _, exists, _ := c.nsinformer.GetIndexer().GetByKey(key); exists {
+		Logger.Info("requeuing namespace deletion...", "Namespace", namespace)
+		c.queue.AddAfter(item, 5*time.Second)
+	} else {
+		Logger.Info("Namespace deletion completed", "Namespace", namespace)
+		note := notification.Note{
+			State:          "Deleted", //TODO: handle unknown state transition error
+			Namespace:      namespace,
+			FailureMessage: "",
+		}
+		if err := c.notifyClient.Send(note); err != nil {
+			Logger.Error(err, "Failed to send notification", "namespace", namespace)
+		}
+
+		c.stateHistory.Lock()
+		c.stateHistory.perNamespaceHistory[namespace] = &NamespaceStateHistory{
+			backupStatus: "NotFound",
+			mongoStatus:  "NotFound",
+			notification: "Deleted",
+			lastUpdate:   time.Now(),
+		}
+		c.stateHistory.Unlock()
+
+		c.queue.Forget(key)
+	}
+
+	return true
+}
+
+func (c *controller) handleCRDeletion(obj interface{}) {
+	var mongoStatus, backupStatus, notificationstate string
+	u := obj.(*unstructured.Unstructured)
+	ns := u.Object["metadata"].(map[string]interface{})["namespace"].(string)
+
+	backupStatus = getCRStatus(c.backupLister, ns)
+	mongoStatus = getCRStatus(c.mongoLister, ns)
+
+	if (backupStatus == NOTFOUND && mongoStatus == AVAILABLE) ||
+		(backupStatus == AVAILABLE && mongoStatus == NOTFOUND) {
+		notificationstate = "NotReachable"
+		note := notification.Note{
+			State:          notificationstate,
+			Namespace:      ns,
+			FailureMessage: "",
+		}
+		if err := c.notifyClient.Send(note); err != nil {
+			Logger.Error(err, "Failed to send notification", "namespace", ns)
+		}
+		c.stateHistory.Lock()
+		c.stateHistory.perNamespaceHistory[ns] = &NamespaceStateHistory{
+			mongoStatus:  mongoStatus,
+			backupStatus: backupStatus,
+			notification: notificationstate,
+			lastUpdate:   time.Now(),
+		}
+		c.stateHistory.Unlock()
+	}
+	Logger.Info("Curent Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "Notification", notificationstate, "Event", "CR Deletion")
+
 }
