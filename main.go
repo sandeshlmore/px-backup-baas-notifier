@@ -12,12 +12,14 @@ import (
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 var Logger logr.Logger
+var nsLabel string
 
 func init() {
 	opts := zap.Options{
@@ -25,6 +27,17 @@ func init() {
 		TimeEncoder: zapcore.TimeEncoderOfLayout(time.RFC3339),
 	}
 	Logger = zap.New(zap.UseFlagOptions(&opts))
+
+	nsLabel = "" //os.Getenv("nsLabel")
+	// if nsLabel == "" {
+	// 	Logger.Error(errors.New("nsLabel env not found"), "Namespace Identifier label 'nsLabel' must be set as env")
+	// 	os.Exit(1)
+	// } else {
+	// 	if res := strings.Split(nsLabel, ":"); len(res) != 2 {
+	// 		Logger.Error(errors.New("Invalid env 'nsLabel'"), "Namespace Identifier label 'nsLabel' must be in `key:val` format ")
+	// 		os.Exit(1)
+	// 	}
+	// }
 }
 
 func main() {
@@ -51,9 +64,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		Logger.Error(err, "error creating clientset")
+		os.Exit(1)
+	}
+
 	dynClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		Logger.Error(err, "Error getting dyn client")
+		os.Exit(1)
 	}
 
 	infFactory := dynamicinformer.NewDynamicSharedInformerFactory(dynClient, 0*time.Minute)
@@ -61,7 +81,7 @@ func main() {
 	stopch := make(<-chan struct{})
 	notifyClient := notification.Client{WebhookURL: webhookURL}
 
-	c := newController(dynClient, infFactory, stopch, notifyClient)
+	c := newController(clientset, dynClient, infFactory, stopch, notifyClient)
 
 	c.run(stopch)
 
