@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"log"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -18,10 +21,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-var Logger logr.Logger
-var nsLabel string
+var (
+	Logger            logr.Logger
+	nsLabel           string
+	schedulerUrl      string
+	RetryDelaySeconds int
+	BackupTimeout     int
+)
 
 func init() {
+	var err error
+
 	opts := zap.Options{
 		Development: true,
 		TimeEncoder: zapcore.TimeEncoderOfLayout(time.RFC3339),
@@ -38,6 +48,30 @@ func init() {
 	// 		os.Exit(1)
 	// 	}
 	// }
+
+	schedulerUrl = os.Getenv("schedulerUrl")
+	if schedulerUrl == "" || !isUrl(schedulerUrl) {
+		Logger.Error(errors.New("Invalid backupSchedulerUrl configured"), "")
+		os.Exit(1)
+	}
+	t := os.Getenv("BackupTimeout")
+	if t == "" {
+		BackupTimeout = 15
+	} else {
+		BackupTimeout, err = strconv.Atoi(t)
+		if err != nil {
+			log.Fatalf("Failed to Parse BackupTimeout env")
+		}
+	}
+	t = os.Getenv("RetryDelaySeconds")
+	if t == "" {
+		RetryDelaySeconds = 8
+	} else {
+		RetryDelaySeconds, err = strconv.Atoi(t)
+		if err != nil {
+			log.Fatalf("Failed to Parse retryDelaySeconds env")
+		}
+	}
 }
 
 func main() {

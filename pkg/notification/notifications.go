@@ -48,6 +48,14 @@ var StatesAndNotificationsMapping = map[string]map[string]string{
 	},
 }
 
+var BackupAndSchedulerStatusMapping = map[string]map[string]string{
+	"Available": {
+		"Pending":   "Provisioning",
+		"Failed":    "Failed",
+		"Available": "Success",
+	},
+}
+
 type Note struct {
 	State          string `json:"state"`
 	FailureMessage string `json:"failure_message"`
