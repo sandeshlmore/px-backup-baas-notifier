@@ -69,6 +69,10 @@ type SchedulerStatus struct {
 	SUCCESS bool
 }
 
+type Scheduler struct {
+	Status SchedulerStatus
+}
+
 type Status string
 
 const (
@@ -192,9 +196,9 @@ func (c *controller) run(stopch <-chan struct{}) {
 	c.dynInformer.Start(stopch)
 	go c.nsinformer.Run(stopch)
 
-	go wait.Until(c.worker1, 1*time.Second, stopch)
+	go wait.Until(c.nsworker, 1*time.Second, stopch)
 
-	go wait.Until(c.worker2, 1*time.Second, stopch)
+	go wait.Until(c.crworker, 1*time.Second, stopch)
 
 	<-stopch
 
@@ -223,12 +227,12 @@ func extractStateFromCRStatus(obj map[string]interface{}) string {
 	return state
 }
 
-func (c *controller) worker1() {
+func (c *controller) nsworker() {
 	for c.handleNamespaceDeletion() {
 	}
 }
 
-func (c *controller) worker2() {
+func (c *controller) crworker() {
 	for c.handleBackupAndMongoCreateUpdateEvents() {
 	}
 }
@@ -257,7 +261,7 @@ func (c *controller) handleNamespaceDeletion() bool {
 	} else {
 		Logger.Info("Namespace deletion completed", "Namespace", namespace)
 		state := "Deleted"
-		if c.skipNotification(namespace, state, NOTFOUND, NOTFOUND) {
+		if c.skipNotification(namespace, state, NOTFOUND, NOTFOUND, "") {
 			return true
 		}
 		note := notification.Note{
@@ -288,7 +292,7 @@ func (c *controller) handleCRDeletion(obj interface{}) {
 		(backupStatus == AVAILABLE && mongoStatus == NOTFOUND) &&
 			(c.stateHistory.perNamespaceHistory[ns].notification == "Success") {
 		notificationstate = "NotReachable"
-		if c.skipNotification(ns, notificationstate, backupStatus, mongoStatus) {
+		if c.skipNotification(ns, notificationstate, backupStatus, mongoStatus, "") {
 			return
 		}
 		note := notification.Note{
@@ -305,6 +309,7 @@ func (c *controller) handleCRDeletion(obj interface{}) {
 
 func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 	var mongoStatus, backupStatus, schedulerStatus Status
+	scheduler := &Scheduler{}
 	item, quit := c.backupqueue.Get()
 	if quit {
 		return false
@@ -336,7 +341,7 @@ func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 	}
 
 	if state == "Success" {
-		schedulerStatus = getSchedulerStatus(creationTime, ns)
+		schedulerStatus = scheduler.getStatus(creationTime, ns)
 		Logger.Info("", "SchedulerStatus", schedulerStatus, "NameSpace", ns)
 		state = notification.BackupAndSchedulerStatusMapping[string(AVAILABLE)][string(schedulerStatus)]
 		if state == "Provisioning" {
@@ -346,7 +351,7 @@ func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 		}
 	}
 
-	if c.skipNotification(ns, state, backupStatus, mongoStatus) {
+	if c.skipNotification(ns, state, backupStatus, mongoStatus, schedulerStatus) {
 		return true
 	}
 
@@ -364,8 +369,8 @@ func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 	return true
 }
 
-func getSchedulerStatus(creationTime v1.Time, ns string) Status {
-	isReady, err := IsBackupSchedulerReady(ns)
+func (s *Scheduler) getStatus(creationTime v1.Time, ns string) Status {
+	isReady, err := s.isReady(ns)
 	if err != nil {
 		Logger.Error(err, "Failed to get scheduler status")
 	}
@@ -378,8 +383,7 @@ func getSchedulerStatus(creationTime v1.Time, ns string) Status {
 	return AVAILABLE
 }
 
-func IsBackupSchedulerReady(ns string) (bool, error) {
-	status := SchedulerStatus{}
+func (s *Scheduler) isReady(ns string) (bool, error) {
 	client := &http.Client{}
 
 	request, err := http.NewRequest("GET", schedulerUrl, nil)
@@ -393,24 +397,33 @@ func IsBackupSchedulerReady(ns string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	err = json.NewDecoder(resp.Body).Decode(&status)
-	return status.SUCCESS, err
+	err = json.NewDecoder(resp.Body).Decode(&s.Status)
+	return s.Status.SUCCESS, err
 }
 
-func (c *controller) skipNotification(ns, state string, backupStatus, mongoStatus Status) bool {
+func (c *controller) skipNotification(ns, state string, backupStatus, mongoStatus, schedulerStatus Status) bool {
 	msg, skip := "", false
 	c.stateHistory.Lock()
 
-	if previousState, ok := c.stateHistory.perNamespaceHistory[ns]; ok && previousState.notification == state {
+	previousState, ok := c.stateHistory.perNamespaceHistory[ns]
+	if ok && previousState.notification == state {
 		msg, skip = "Skipping notification. ", true
 	}
-	c.stateHistory.perNamespaceHistory[ns] = &NamespaceStateHistory{
-		backupStatus: backupStatus,
-		mongoStatus:  mongoStatus,
-		notification: state,
-		lastUpdate:   time.Now(),
+
+	if ok && schedulerStatus == "" && c.stateHistory.perNamespaceHistory[ns].schedulerStatus != "" {
+		// we only query schedulerStatus
+		// so if we dont know schedulerStatus in current reconcilation check for previous
+		schedulerStatus = c.stateHistory.perNamespaceHistory[ns].schedulerStatus
 	}
-	Logger.Info(msg+"Curent Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "Notification", state)
+	c.stateHistory.perNamespaceHistory[ns] = &NamespaceStateHistory{
+		backupStatus:    backupStatus,
+		mongoStatus:     mongoStatus,
+		notification:    state,
+		lastUpdate:      time.Now(),
+		schedulerStatus: schedulerStatus,
+	}
+
+	Logger.Info(msg+"Curent Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "schedulerStatus", schedulerStatus, "Notification", state)
 	c.stateHistory.Unlock()
 	return skip
 }

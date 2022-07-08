@@ -49,7 +49,7 @@ func init() {
 	// 	}
 	// }
 
-	schedulerUrl = os.Getenv("schedulerUrl")
+	schedulerUrl = os.Getenv("SCHEDULER_URL")
 	if schedulerUrl == "" || !isUrl(schedulerUrl) {
 		Logger.Error(errors.New("Invalid backupSchedulerUrl configured"), "")
 		os.Exit(1)

@@ -29,7 +29,7 @@ spec:
             value: ""
           - name: "BackupTimeout"
             value: ""
-          - name: "schedulerUrl"
+          - name: "SCHEDULE_URL"
             value: ""
         image: px-backup-notifier:latest
         name: px-backup-notifier
