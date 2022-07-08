@@ -25,6 +25,12 @@ spec:
             value: ""
           - name: "nsLabel"
             value: ""
+          - name: "RetryDelaySeconds"
+            value: ""
+          - name: "BackupTimeout"
+            value: ""
+          - name: "schedulerUrl"
+            value: ""
         image: px-backup-notifier:latest
         name: px-backup-notifier
         securityContext:
