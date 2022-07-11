@@ -27,6 +27,10 @@ var (
 	schedulerUrl      string
 	RetryDelaySeconds int
 	BackupTimeout     int
+	ClientID          string
+	UserName          string
+	Password          string
+	TokenDuration     string
 )
 
 func init() {
@@ -72,6 +76,27 @@ func init() {
 			log.Fatalf("Failed to Parse retryDelaySeconds env")
 		}
 	}
+
+	if ClientID = os.Getenv("ClientID"); ClientID == "" {
+		Logger.Error(nil, "ClientID should not be empty")
+		os.Exit(1)
+	}
+
+	if UserName = os.Getenv("UserName"); UserName == "" {
+		Logger.Error(nil, "UserName should not be empty")
+		os.Exit(1)
+	}
+
+	if Password = os.Getenv("Password"); Password == "" {
+		Logger.Error(nil, "Password should not be empty")
+		os.Exit(1)
+	}
+
+	if TokenDuration = os.Getenv("TokenDuration"); TokenDuration == "" {
+		Logger.Error(nil, "TokenDuration should not be empty")
+		os.Exit(1)
+	}
+
 }
 
 func main() {
@@ -97,7 +122,11 @@ func main() {
 		Logger.Info("Invalid webhook url configured", "webhookUrl", webhookURL)
 		os.Exit(1)
 	}
-
+	schedulerTokenUrl := os.Getenv("SchedulerToken_Url")
+	if !isUrl(schedulerTokenUrl) {
+		Logger.Error(nil, "Invalid SchedulerToken_Url configured", "SchedulerToken_Url", schedulerTokenUrl)
+		os.Exit(1)
+	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		Logger.Error(err, "error creating clientset")
@@ -115,7 +144,7 @@ func main() {
 	stopch := make(<-chan struct{})
 	notifyClient := notification.Client{WebhookURL: webhookURL}
 
-	c := newController(clientset, dynClient, infFactory, stopch, notifyClient)
+	c := newController(clientset, dynClient, infFactory, stopch, notifyClient, schedulerTokenUrl)
 
 	c.run(stopch)
 

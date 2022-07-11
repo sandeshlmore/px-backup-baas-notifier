@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +41,7 @@ type controller struct {
 	notifyClient        notification.Client
 	nsqueue             workqueue.RateLimitingInterface
 	backupqueue         workqueue.RateLimitingInterface
+	schedulerTokenUrl   string
 }
 
 var backupGVR = schema.GroupVersionResource{
@@ -70,7 +74,12 @@ type SchedulerStatus struct {
 }
 
 type Scheduler struct {
-	Status SchedulerStatus
+	Status   SchedulerStatus
+	tokenUrl string
+}
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type Status string
@@ -85,7 +94,7 @@ const (
 // Create Informers and add eventhandlers
 func newController(client kubernetes.Interface, dynclient dynamic.Interface,
 	dynInformer dynamicinformer.DynamicSharedInformerFactory,
-	stopch <-chan struct{}, notifyClient notification.Client) *controller {
+	stopch <-chan struct{}, notifyClient notification.Client, schedulerTokenUrl string) *controller {
 	nsqueue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	backupqueue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
@@ -125,9 +134,10 @@ func newController(client kubernetes.Interface, dynclient dynamic.Interface,
 		stateHistory: &StateHistory{
 			perNamespaceHistory: map[string]*NamespaceStateHistory{},
 		},
-		notifyClient: notifyClient,
-		nsqueue:      nsqueue,
-		backupqueue:  backupqueue,
+		notifyClient:      notifyClient,
+		nsqueue:           nsqueue,
+		backupqueue:       backupqueue,
+		schedulerTokenUrl: schedulerTokenUrl,
 	}
 
 	nsinformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -309,7 +319,7 @@ func (c *controller) handleCRDeletion(obj interface{}) {
 
 func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 	var mongoStatus, backupStatus, schedulerStatus Status
-	scheduler := &Scheduler{}
+	scheduler := &Scheduler{tokenUrl: c.schedulerTokenUrl}
 	item, quit := c.backupqueue.Get()
 	if quit {
 		return false
@@ -385,14 +395,18 @@ func (s *Scheduler) getStatus(creationTime v1.Time, ns string) Status {
 
 func (s *Scheduler) isReady(ns string) (bool, error) {
 	client := &http.Client{}
-
+	tokenPrefix := "Bearer"
 	request, err := http.NewRequest("GET", schedulerUrl, nil)
 	q := request.URL.Query()
 	q.Add("name", ns)
 	request.URL.RawQuery = q.Encode()
+
+	token, err := s.getToken()
 	if err != nil {
 		return false, err
 	}
+	request.Header.Set("Authorization", tokenPrefix+" "+token)
+
 	resp, err := client.Do(request)
 	if err != nil {
 		return false, err
@@ -426,4 +440,30 @@ func (c *controller) skipNotification(ns, state string, backupStatus, mongoStatu
 	Logger.Info(msg+"Curent Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "schedulerStatus", schedulerStatus, "Notification", state)
 	c.stateHistory.Unlock()
 	return skip
+}
+
+// create new token to get scheduler status
+func (s *Scheduler) getToken() (string, error) {
+	client := &http.Client{}
+	tokenResponse := &TokenResponse{}
+	params := url.Values{}
+	params.Add("grant_type", "password")
+	params.Add("client_id", ClientID)
+	params.Add("username", UserName)
+	params.Add("password", Password)
+	params.Add("token-duration", TokenDuration)
+	body := strings.NewReader(params.Encode())
+
+	request, err := http.NewRequest("POST", s.tokenUrl, body)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(request)
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	err = json.NewDecoder(resp.Body).Decode(tokenResponse)
+	return tokenResponse.AccessToken, err
 }
