@@ -23,6 +23,8 @@ spec:
         env:
           - name: "WEBHOOK_URL"
             value: ""
+          - name: "nsLabel"
+            value: ""
         image: px-backup-notifier:latest
         name: px-backup-notifier
         securityContext:
