@@ -22,9 +22,23 @@ spec:
         - /controller
         env:
           - name: "WEBHOOK_URL"
-            value: ""
+            value: "http://tenant-deployment-notify-eventsource-svc.argo-events:8080/status"
           - name: "nsLabel"
             value: ""
+          - name: "RETRY_DELAY"
+            value: "20"
+          - name: "CLIENT_ID"
+            value: ""
+          - name: "USERNAME"
+            value: ""
+          - name: "PASSWORD"
+            value: ""
+          - name: "TOKEN_DURATION"
+            value: "365d"
+          - name: "TOKEN_URL"
+            value: "https://backup.baas.portworx.dev/auth/realms/master/protocol/openid-connect/token"
+          - name: "SCHEDULE_URL"
+            value: "https://backup.baas.portworx.dev/lhBackend/pxBackup/schedules/getItem?org_id=default&endpoint=px-backup:10002"
         image: px-backup-notifier:latest
         name: px-backup-notifier
         securityContext:
