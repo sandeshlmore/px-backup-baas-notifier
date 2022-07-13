@@ -33,13 +33,11 @@ type Schedule struct {
 	logger          logr.Logger
 }
 
-func NewSchedule(scheduleURL string, scheduleTimeout int64, config TokenConfig,
-	logger logr.Logger) *Schedule {
+func NewSchedule(scheduleURL string, scheduleTimeout int64, config TokenConfig) *Schedule {
 	s := &Schedule{
 		ScheduleURL:     scheduleURL,
 		ScheduleTimeout: scheduleTimeout,
 		TokenConfig:     config,
-		logger:          logger,
 	}
 	return s
 }
@@ -49,13 +47,15 @@ type TokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+var isTrue = true
+
 func (s *Schedule) GetStatus(creationTime v1.Time, ns string) (types.Status, error) {
 	isReady, err := s.isReady(ns)
 	if err != nil {
 		return types.FAILED, err
 	}
 	if !isReady {
-		if time.Since(creationTime.Time) > time.Duration(s.ScheduleTimeout)*time.Minute { //TODO: make configurable backup timeout
+		if time.Since(creationTime.Time) > time.Duration(s.ScheduleTimeout)*time.Minute {
 			return types.FAILED, nil
 		}
 		return types.PENDING, nil

@@ -1,17 +1,18 @@
-package main
+package controllers
 
 import (
 	"context"
 	"sync"
 	"time"
 
+	"github.com/portworx/px-backup-baas-notifier/pkg/envvars"
+	"github.com/portworx/px-backup-baas-notifier/pkg/log"
 	"github.com/portworx/px-backup-baas-notifier/pkg/notification"
 	"github.com/portworx/px-backup-baas-notifier/pkg/schedule"
 	"github.com/portworx/px-backup-baas-notifier/pkg/types"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -66,8 +67,10 @@ type StateHistory struct {
 	perNamespaceHistory map[string]*NamespaceStateHistory
 }
 
+var Logger = log.Logger
+
 // Create Informers and add eventhandlers
-func newController(client kubernetes.Interface, dynclient dynamic.Interface,
+func NewController(client kubernetes.Interface, dynclient dynamic.Interface,
 	dynInformer dynamicinformer.DynamicSharedInformerFactory,
 	stopch <-chan struct{}, notifyClient notification.Client, schedule schedule.Schedule) *controller {
 
@@ -174,7 +177,7 @@ func (c *controller) SyncInformerCache() {
 }
 
 // start the controller
-func (c *controller) run(stopch <-chan struct{}) {
+func (c *controller) Run(stopch <-chan struct{}) {
 	Logger.Info("Started notification controller")
 	defer c.nsqueue.ShutDown()
 	defer c.backupqueue.ShutDown()
@@ -208,19 +211,10 @@ func (c *controller) handleNamespaceDeletion() bool {
 		return false
 	}
 	defer c.nsqueue.Done(item)
-	key, err := cache.MetaNamespaceKeyFunc(item)
-	if err != nil {
-		Logger.Error(err, "getting key from cahce")
-		return false
-	}
 
-	_, namespace, err := cache.SplitMetaNamespaceKey(key)
-	if err != nil {
-		Logger.Error(err, "splitting key into namespace and name")
-		return false
-	}
+	namespace := item.(corev1.Namespace).Namespace
 
-	if _, exists, _ := c.nsinformer.GetIndexer().GetByKey(key); exists {
+	if _, exists, _ := c.nsinformer.GetIndexer().GetByKey(namespace); exists {
 		Logger.Info("requeuing namespace deletion...", "Namespace", namespace)
 		c.nsqueue.AddAfter(item, 10*time.Second)
 	} else {
@@ -235,10 +229,10 @@ func (c *controller) handleNamespaceDeletion() bool {
 			FailureMessage: "",
 		}
 		if err := c.notifyClient.Send(note); err != nil {
-			Logger.Error(err, "Failed to send notification", "namespace", namespace)
+			Logger.Error(err, "Failed to send notification", "Namespace", namespace)
 		}
 
-		c.nsqueue.Forget(key)
+		c.nsqueue.Forget(namespace)
 	}
 
 	return true
@@ -266,7 +260,7 @@ func (c *controller) handleCRDeletion(obj interface{}) {
 			FailureMessage: "",
 		}
 		if err := c.notifyClient.Send(note); err != nil {
-			Logger.Error(err, "Failed to send notification", "namespace", ns)
+			Logger.Error(err, "Failed to send notification", "Namespace", ns)
 		}
 	}
 	Logger.Info("Skipping Notification. Current Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "Notification", notificationstate, "Event", "CR Deletion")
@@ -307,12 +301,12 @@ func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 	if state == "Success" {
 		schedulerStatus, err := c.schedule.GetStatus(creationTime, ns)
 		if err != nil {
-			Logger.Error(err, "Failed to get scheduler status", "namespace", ns)
+			Logger.Error(err, "Failed to get scheduler status", "Namespace", ns)
 		}
 		Logger.Info("", "SchedulerStatus", schedulerStatus, "NameSpace", ns)
 		state = notification.BackupAndSchedulerStatusMapping[string(types.AVAILABLE)][string(schedulerStatus)]
 		if state == "Provisioning" {
-			defer c.backupqueue.AddAfter(item, time.Duration(retryDelaySeconds)*time.Second)
+			defer c.backupqueue.AddAfter(item, time.Duration(envvars.RetryDelaySeconds)*time.Second)
 		} else {
 			defer c.backupqueue.Forget(item)
 		}
@@ -361,25 +355,4 @@ func (c *controller) skipNotification(ns, state string, backupStatus, mongoStatu
 	Logger.Info(msg+"Current Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "schedulerStatus", schedulerStatus, "Notification", state)
 	c.stateHistory.Unlock()
 	return skip
-}
-
-func getCRStatus(lister cache.GenericLister, ns string) types.Status {
-	cr, _ := lister.ByNamespace(ns).List(labels.NewSelector())
-	if len(cr) != 0 {
-		u := cr[0].(*unstructured.Unstructured)
-		status := extractStateFromCRStatus(u.Object)
-		return types.Status(status)
-	}
-	return types.NOTFOUND
-}
-
-func extractStateFromCRStatus(obj map[string]interface{}) string {
-	var state string
-
-	if obj["status"] == nil {
-		state = "Pending"
-	} else {
-		state = obj["status"].(map[string]interface{})["state"].(string)
-	}
-	return state
 }
