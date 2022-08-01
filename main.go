@@ -22,9 +22,11 @@ import (
 )
 
 var (
-	Logger            logr.Logger
-	nsLabel           string
-	retryDelaySeconds int
+	Logger              logr.Logger
+	nsLabel             string
+	retryDelaySeconds   int
+	retryMaxBackoff     int
+	retryDefaultBackoff int
 )
 
 const (
@@ -60,7 +62,24 @@ func init() {
 			log.Fatalf("Failed to Parse retryDelaySeconds env")
 		}
 	}
-
+	t = os.Getenv("RETRY_MAX_BACKOFF")
+	if t == "" {
+		retryMaxBackoff = 10
+	} else {
+		retryMaxBackoff, err = strconv.Atoi(t)
+		if err != nil {
+			log.Fatalf("Failed to Parse RETRY_MAX_BACKOFF env")
+		}
+	}
+	t = os.Getenv("DEFAULT_RETRY_BACKOFF")
+	if t == "" {
+		retryDefaultBackoff = 2
+	} else {
+		retryDefaultBackoff, err = strconv.Atoi(t)
+		if err != nil {
+			log.Fatalf("Failed to Parse DEFAULT_RETRY_BACKOFF env")
+		}
+	}
 }
 
 func main() {

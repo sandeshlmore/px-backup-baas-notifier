@@ -56,6 +56,8 @@ var BackupAndSchedulerStatusMapping = map[string]map[string]string{
 	},
 }
 
+var NOTIFICATION_NON_200_RESPONSE string = "non 200 Response from Webhook."
+
 type Note struct {
 	State          string `json:"state"`
 	FailureMessage string `json:"failure_message"`
@@ -82,7 +84,7 @@ func (n *Client) Send(note Note) error {
 		return err
 	}
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("non 200 Response from Webhook. Actual Status: %s", resp.Status)
+		return fmt.Errorf(NOTIFICATION_NON_200_RESPONSE+" Actual Status: %s", resp.Status)
 	}
 	return err
 }

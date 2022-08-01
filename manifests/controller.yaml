@@ -39,6 +39,10 @@ spec:
             value: "https://backup.baas.portworx.dev/auth/realms/master/protocol/openid-connect/token"
           - name: "SCHEDULE_URL"
             value: "https://backup.baas.portworx.dev/lhBackend/pxBackup/schedules/getItem?org_id=default&endpoint=px-backup:10002"
+          - name: "DEFAULT_RETRY_BACKOFF"
+            value: "2"
+          - name: "RETRY_MAX_BACKOFF"
+            value: "10"
         image: px-backup-notifier:latest
         name: px-backup-notifier
         securityContext:

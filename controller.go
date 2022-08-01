@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/portworx/px-backup-baas-notifier/pkg/notification"
 	"github.com/portworx/px-backup-baas-notifier/pkg/schedule"
 	"github.com/portworx/px-backup-baas-notifier/pkg/types"
@@ -24,21 +26,22 @@ import (
 )
 
 type controller struct {
-	client              kubernetes.Interface
-	dynclient           dynamic.Interface
-	nsinformer          cache.SharedIndexInformer
-	backupinformer      cache.SharedIndexInformer
-	mongoinformer       cache.SharedIndexInformer
-	dynInformer         dynamicinformer.DynamicSharedInformerFactory
-	backupLister        cache.GenericLister
-	mongoLister         cache.GenericLister
-	stopChannel         <-chan struct{}
-	fullCacheSyncedOnce bool
-	stateHistory        *StateHistory
-	notifyClient        notification.Client
-	nsqueue             workqueue.RateLimitingInterface
-	backupqueue         workqueue.RateLimitingInterface
-	schedule            schedule.Schedule
+	client                 kubernetes.Interface
+	dynclient              dynamic.Interface
+	nsinformer             cache.SharedIndexInformer
+	backupinformer         cache.SharedIndexInformer
+	mongoinformer          cache.SharedIndexInformer
+	dynInformer            dynamicinformer.DynamicSharedInformerFactory
+	backupLister           cache.GenericLister
+	mongoLister            cache.GenericLister
+	stopChannel            <-chan struct{}
+	fullCacheSyncedOnce    bool
+	stateHistory           *StateHistory
+	notifyClient           notification.Client
+	nsqueue                workqueue.RateLimitingInterface
+	backupqueue            workqueue.RateLimitingInterface
+	notificationretryqueue workqueue.RateLimitingInterface
+	schedule               schedule.Schedule
 }
 
 var backupGVR = schema.GroupVersionResource{
@@ -53,12 +56,19 @@ var mongoGVR = schema.GroupVersionResource{
 	Resource: "mongos",
 }
 
+type NotificationRetryStatus struct {
+	needsRetry bool
+	backoff    time.Duration // default 2 min and doubles for every retry
+	id         string
+}
+
 type NamespaceStateHistory struct {
-	backupStatus    types.Status
-	mongoStatus     types.Status
-	notification    string
-	schedulerStatus types.Status
-	lastUpdate      time.Time
+	backupStatus           types.Status
+	mongoStatus            types.Status
+	notification           string
+	schedulerStatus        types.Status
+	lastUpdate             time.Time
+	notificationRetryState *NotificationRetryStatus
 }
 
 type StateHistory struct {
@@ -73,7 +83,7 @@ func newController(client kubernetes.Interface, dynclient dynamic.Interface,
 
 	nsqueue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	backupqueue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-
+	notificationretryqueue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	Backupinf := dynInformer.ForResource(backupGVR).Informer()
 	Mongoinf := dynInformer.ForResource(mongoGVR).Informer()
 
@@ -110,10 +120,11 @@ func newController(client kubernetes.Interface, dynclient dynamic.Interface,
 		stateHistory: &StateHistory{
 			perNamespaceHistory: map[string]*NamespaceStateHistory{},
 		},
-		notifyClient: notifyClient,
-		nsqueue:      nsqueue,
-		backupqueue:  backupqueue,
-		schedule:     schedule,
+		notifyClient:           notifyClient,
+		nsqueue:                nsqueue,
+		backupqueue:            backupqueue,
+		schedule:               schedule,
+		notificationretryqueue: notificationretryqueue,
 	}
 
 	nsinformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -186,6 +197,8 @@ func (c *controller) run(stopch <-chan struct{}) {
 
 	go wait.Until(c.crworker, 1*time.Second, stopch)
 
+	go wait.Until(c.notificationRetryWorker, 1*time.Second, stopch)
+
 	<-stopch
 
 	Logger.Info("Shutting down notification controller")
@@ -229,14 +242,8 @@ func (c *controller) handleNamespaceDeletion() bool {
 		if c.skipNotification(namespace, state, types.NOTFOUND, types.NOTFOUND, "") {
 			return true
 		}
-		note := notification.Note{
-			State:          state, //TODO: handle unknown state transition error
-			Namespace:      namespace,
-			FailureMessage: "",
-		}
-		if err := c.notifyClient.Send(note); err != nil {
-			Logger.Error(err, "Failed to send notification", "namespace", namespace)
-		}
+
+		c.SendNotification(namespace, false)
 
 		c.nsqueue.Forget(key)
 	}
@@ -260,14 +267,9 @@ func (c *controller) handleCRDeletion(obj interface{}) {
 		if c.skipNotification(ns, notificationstate, backupStatus, mongoStatus, "") {
 			return
 		}
-		note := notification.Note{
-			State:          notificationstate,
-			Namespace:      ns,
-			FailureMessage: "",
-		}
-		if err := c.notifyClient.Send(note); err != nil {
-			Logger.Error(err, "Failed to send notification", "namespace", ns)
-		}
+
+		c.SendNotification(ns, false)
+
 	}
 	Logger.Info("Skipping Notification. Current Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "Notification", notificationstate, "Event", "CR Deletion")
 }
@@ -322,16 +324,7 @@ func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 		return true
 	}
 
-	note := notification.Note{
-		State:          state, //TODO: handle unknown state transition error
-		Namespace:      ns,
-		FailureMessage: "",
-	}
-
-	err := c.notifyClient.Send(note) //TODO: check if notification send failed and retry in case of non 200
-	if err != nil {
-		Logger.Error(err, "Failed to send notification")
-	}
+	c.SendNotification(ns, false)
 
 	return true
 }
@@ -339,6 +332,8 @@ func (c *controller) handleBackupAndMongoCreateUpdateEvents() bool {
 func (c *controller) skipNotification(ns, state string, backupStatus, mongoStatus, schedulerStatus types.Status) bool {
 	msg, skip := "", false
 	c.stateHistory.Lock()
+
+	var notificationRetryState *NotificationRetryStatus
 
 	previousState, ok := c.stateHistory.perNamespaceHistory[ns]
 	if ok && previousState.notification == state {
@@ -350,15 +345,24 @@ func (c *controller) skipNotification(ns, state string, backupStatus, mongoStatu
 		// so if we dont know schedulerStatus in current reconcilation check for previous
 		schedulerStatus = c.stateHistory.perNamespaceHistory[ns].schedulerStatus
 	}
+
+	if !skip {
+		notificationRetryState = &NotificationRetryStatus{needsRetry: false, backoff: time.Duration(retryDefaultBackoff) * time.Minute}
+	} else {
+		notificationRetryState = c.stateHistory.perNamespaceHistory[ns].notificationRetryState
+	}
+
 	c.stateHistory.perNamespaceHistory[ns] = &NamespaceStateHistory{
-		backupStatus:    backupStatus,
-		mongoStatus:     mongoStatus,
-		notification:    state,
-		lastUpdate:      time.Now(),
-		schedulerStatus: schedulerStatus,
+		backupStatus:           backupStatus,
+		mongoStatus:            mongoStatus,
+		notification:           state,
+		lastUpdate:             time.Now(),
+		schedulerStatus:        schedulerStatus,
+		notificationRetryState: notificationRetryState,
 	}
 
 	Logger.Info(msg+"Current Status: ", "NameSpace", ns, "Backup", backupStatus, "Mongo", mongoStatus, "schedulerStatus", schedulerStatus, "Notification", state)
+
 	c.stateHistory.Unlock()
 	return skip
 }
@@ -382,4 +386,57 @@ func extractStateFromCRStatus(obj map[string]interface{}) string {
 		state = obj["status"].(map[string]interface{})["state"].(string)
 	}
 	return state
+}
+
+func (c *controller) notificationRetryWorker() {
+	for c.handleNotificationRetries() {
+	}
+}
+
+func (c *controller) handleNotificationRetries() bool {
+	item, quit := c.notificationretryqueue.Get()
+	if quit {
+		return false
+	}
+	defer c.notificationretryqueue.Done(item)
+
+	retry := item.(NotificationRetryStatus)
+
+	ns := strings.Split(retry.id, "/")[0]
+
+	if retry.needsRetry && !retry.hasBackOffExpired() && retry.id == c.stateHistory.perNamespaceHistory[ns].notificationRetryState.id {
+		c.SendNotification(ns, true)
+	}
+
+	return true
+}
+
+func (retry *NotificationRetryStatus) hasBackOffExpired() bool {
+	return retry.backoff > time.Minute*time.Duration(retryMaxBackoff)
+}
+
+func (c *controller) SendNotification(ns string, isRetry bool) {
+	c.stateHistory.Lock()
+	state := c.stateHistory.perNamespaceHistory[ns]
+
+	Logger.Info("Sending notification.", "Namespace", ns, "Notification", state.notification, "isRetry", isRetry)
+	note := notification.Note{
+		State:     state.notification,
+		Namespace: ns,
+	}
+	if err := c.notifyClient.Send(note); err != nil {
+		Logger.Error(err, "Failed to send notification", "Namespace", ns, "Notification", state.notification, "isRetry", isRetry)
+		if strings.Contains(err.Error(), notification.NOTIFICATION_NON_200_RESPONSE) {
+			state.notificationRetryState.id = ns + "/" + uuid.NewString()
+			state.notificationRetryState.needsRetry = true
+			c.notificationretryqueue.AddAfter(*state.notificationRetryState, state.notificationRetryState.backoff)
+			Logger.Info("Notification retry added in queue.", "Namespace", ns, "Backoff", state.notificationRetryState.backoff, "isRetry", isRetry)
+			state.notificationRetryState.backoff *= 2 // exponentiallly increase backoff
+		}
+	} else {
+		state.notificationRetryState.needsRetry = false
+		state.notificationRetryState.backoff = time.Minute * time.Duration(retryDefaultBackoff) //reset backoff to default
+	}
+	c.stateHistory.Unlock()
+
 }
